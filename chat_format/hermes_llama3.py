@@ -248,9 +248,6 @@ def hermes_llama3_function_calling(
         mirostat_eta=mirostat_eta,
         model=model,
         logits_processor=logits_processor,
-        # grammar=llama_grammar.LlamaGrammar.from_string(
-        #     initial_gbnf_tool_grammar, verbose=llama.verbose
-        # ),
     )
     completion: llama_types.CreateCompletionResponse = completion_or_chunks  # type: ignore
     text = completion["choices"][0]["text"]
@@ -259,17 +256,15 @@ def hermes_llama3_function_calling(
     if "<tool_call>" not in text:
         return _convert_completion_to_chat(completion)
     
+    
+    # Extract the JSON string from the response
+    json_string = text[text.find("{"):text.rfind("}") + 1]
 
-    # One or more function calls
-    # Extract the JSON part of the string
-    start_index = text.find("{")
-    end_index = text.rfind("}") + 1
-    json_string = text[start_index:end_index]
     # Convert JSON string to dictionary
     tool_call_dict = json.loads(json_string)
-    # tool = next((tool for tool in tools if tool["function"]["name"] == tool_name), None)
 
     stream=False
+
     if not stream:
 
         # Merge completions
