@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llamacpp_function_calling"
+version = "0.1.0"
+description = "Provide a chat format for function calling fine-tuned models integrated with llama.cpp python."
+authors = [
+    { name="Thanh Nguyen", email="ttnnguyen159@gmail.com" }
+]
+dependencies = [
+    "langchain-core<=0.2.1",
+    "langchain_community>=0.2.5"
+]
+
+[tool.setuptools]
+packages = ["llamacpp_function_calling"] 
