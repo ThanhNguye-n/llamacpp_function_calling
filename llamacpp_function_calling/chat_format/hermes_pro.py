@@ -9,7 +9,7 @@ from typing import (
     Union
 )
 
-from utils import (
+from ..utils import (
     _grammar_for_response_format,
     _convert_completion_to_chat,
     _convert_completion_to_chat_function
@@ -20,9 +20,8 @@ import llama_cpp.llama as llama
 import llama_cpp.llama_types as llama_types
 import llama_cpp.llama_grammar as llama_grammar
 
-# Mostly obtain code from this GitHub repo
-# https://github.com/themrzmaster/llama-cpp-python/blob/4a4b67399b9e5ee872e2b87068de75e2908d5b11/llama_cpp/llama_chat_format.py
-def llama3_function_calling(
+
+def hermes_pro_function_calling(
     llama: llama.Llama,
     messages: List[llama_types.ChatCompletionRequestMessage],
     functions: Optional[List[llama_types.ChatCompletionFunction]] = None,
@@ -59,57 +58,43 @@ def llama3_function_calling(
     function_calling_template = (
         "<|begin_of_text|>"
         "{% if tool_calls %}"
-        "<|start_header_id|>system<|end_header_id|>\n\n"
-        "{% for message in messages %}"
-        "{% if message.role == 'system' %}"
-        "{{ message.content }}"
-        "{% endif %}"
-        "{% endfor %}"
-        "You have access to the following functions to help you respond to users messages: \n"
+        "<|im_start|>system\n"
+        "You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:"
+        "<tools>\n"
         "{% for tool in tools %}"
-        "\nfunctions.{{ tool.function.name }}:\n"
-        "{{ tool.function.parameters | tojson }}"
-        "\n{% endfor %}"
-        "\nYou can respond to users messages with either a single message or one or more function calls. Never both. Prioritize function calls over messages."
-        "\n When the last input we have is function response, bring it to the user. The user cant directly see the function response, unless the assistant shows it."
-        "\nTo respond with a message begin the message with 'message:'"
-        '\n Example sending message: message: "Hello, how can I help you?"'
-        "\nTo respond with one or more function calls begin the message with 'functions.<function_name>:', use the following format:"
-        "\nfunctions.<function_name>:"
-        '\n{ "arg1": "value1", "arg2": "value2" }'
-        "\nfunctions.<function_name>:"
-        '\n{ "arg1": "value1", "arg2": "value2" }'
-        "\nWhen you are done with the function calls, end the message with </done>."
-        '\nStart your output with either message: or functions. <|eot_id|>\n'
+        "{{ tool.function | tojson }}\n"
+        "{% endfor %}"
+        "</tools>"
+        """Use the following pydantic model json schema for each tool call you will make: {"properties": {"arguments": {"title": "Arguments", "type": "object"}, "name": {"title": "Name", "type": "string"}}, "required": ["arguments", "name"], "title": "FunctionCall", "type": "object"}"""
+        "For each function call return a json object with function name and arguments within <tool_call></tool_call> XML tags as follows:"
+        "\n<tool_call>"
+        """\n{"arguments": <args-dict>, "name": <function-name>}"""
+        "\n</tool_call><|im_end|>"
         "{% endif %}"
         "{% for message in messages %}"
-        "{% if message.role == 'tool' %}"
-        "<|start_header_id|>user<|end_header_id|>\n\n"
-        "here is the Function response, bring it to me in a nice way: {{ message.content | default('No response available') }}"
-        "<|eot_id|>\n"
-        "{% elif message.role == 'assistant' and message.function_call is defined%}"
-        "<|start_header_id|>{{ message.role }}<|end_header_id|>"
-        "Function called: {{ message.function_call.name | default('No name') }}\n"
-        "Function argument: {{ message.function_call.arguments | default('No arguments') }}"
-        "<|eot_id|>\n"
+        "{% if message.role == 'system' or message.role == 'assistant'%}"
+        "\n<|im_start|>{{ message.role }}"
+        "\n{{ message.content }}<|im_end|>"
+        "{% elif message.role == 'tool' %}"
+        "\n<|im_start|>{{ message.role }}"
+        "\n<tool_response>"
+        "\n{{ message.content }}"
+        "\n</tool_response>"
+        "\n<|im_end|>"
         "{% else %}"
-        "<|start_header_id|>{{ message.role }}<|end_header_id|>"
-        "{{ message.content }}"
-        "<|eot_id|>\n"
+        "\n<|im_start|>{{ message.role }}"
+        "\n{{ message.content }}<|im_end|>"
         "{% endif %}"
         "{% endfor %}"
-
+        "\n<|im_start|>assistant"
     )
-
-    end_token="<|eot_id|>"
-    role_prefix="<|start_header_id|>assistant<|end_header_id|>"
-    role_suffix="<|eot_id|>"
 
     template_renderer = jinja2.Environment(
         loader=jinja2.BaseLoader(),
         autoescape=jinja2.select_autoescape(["html", "xml"]),
-        undefined=jinja2.DebugUndefined,
+        undefined=jinja2.StrictUndefined,
     ).from_string(function_calling_template)
+
     # Convert legacy functions to tools
     if functions is not None:
         tools = [
@@ -134,7 +119,7 @@ def llama3_function_calling(
                 },
             }
 
-    stop = [stop, end_token] if isinstance(stop, str) else stop + [end_token] if stop else [end_token]
+    stop = [stop, "<|im_end|>"] if isinstance(stop, str) else stop + ["<|im_end|>"] if stop else ["<|im_end|>"]
 
     # Case 1: No tool choice by user
     if (
@@ -149,6 +134,7 @@ def llama3_function_calling(
             tool_calls=None,
             add_generation_prompt=True,
         )
+
         if response_format is not None and response_format["type"] == "json_object":
             grammar = _grammar_for_response_format(response_format)
 
@@ -161,7 +147,7 @@ def llama3_function_calling(
                 min_p=min_p,
                 typical_p=typical_p,
                 stream=stream,
-                stop=stop + ["</done>"],
+                stop=stop,
                 max_tokens=max_tokens,
                 presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
@@ -233,31 +219,19 @@ def llama3_function_calling(
 
     # Case 3: Automatic tool choice
     assert isinstance(tool_choice, str) and tool_choice == "auto"
-    function_names = " | ".join(
-        [f'''"functions.{tool['function']['name']}:"''' for tool in tools]
-    )
-
-    initial_gbnf_tool_grammar = (
-        """root   ::= functions | "message:"\n"""
-        f"""functions ::= {function_names}\n"""
-    )
-
-    follow_up_gbnf_tool_grammar = (
-        f"""root   ::= functions | "</done>"\n"""
-        f"""functions ::= {function_names}\n"""
-    )
-
-
+    
     prompt = template_renderer.render(
         messages=messages,
         tools=tools,
         tool_calls=True,
         add_generation_prompt=True,
     )
-    # print(prompt)
+
+    # print('Prompt_template:\n',prompt)
+    
     completion_or_chunks = llama.create_completion(
         prompt=prompt,
-        temperature=temperature,
+        temperature=0,
         top_p=top_p,
         top_k=top_k,
         min_p=min_p,
@@ -274,102 +248,30 @@ def llama3_function_calling(
         mirostat_eta=mirostat_eta,
         model=model,
         logits_processor=logits_processor,
-        grammar=llama_grammar.LlamaGrammar.from_string(
-            initial_gbnf_tool_grammar, verbose=llama.verbose
-        ),
     )
     completion: llama_types.CreateCompletionResponse = completion_or_chunks  # type: ignore
     text = completion["choices"][0]["text"]
 
-    print(text)
+    # Not calling a tool, return raw messages
+    if "<tool_call>" not in text:
+        return _convert_completion_to_chat(completion)
+    
+    
+    # Extract the JSON string from the response
+    json_string = text[text.find("{"):text.rfind("}") + 1]
 
-    if "message" in text:
-        return _convert_completion_to_chat(
-            llama.create_completion(
-                prompt=prompt + "message:\n",
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                min_p=min_p,
-                typical_p=typical_p,
-                stream=stream,
-                stop=stop+ ["</done>"],
-                logprobs=top_logprobs if logprobs else None,
-                max_tokens=None,
-                presence_penalty=presence_penalty,
-                frequency_penalty=frequency_penalty,
-                repeat_penalty=repeat_penalty,
-                tfs_z=tfs_z,
-                mirostat_mode=mirostat_mode,
-                mirostat_tau=mirostat_tau,
-                mirostat_eta=mirostat_eta,
-                model=model,
-                logits_processor=logits_processor,
-                # grammar=llama_grammar.LlamaGrammar.from_string(
-                #     follow_up_gbnf_tool_grammar, verbose=llama.verbose
-                # ),
-            ),stream=stream
-        )
+    # Convert JSON string to dictionary
+    tool_call_dict = json.loads(json_string)
 
-    # One or more function calls
-    tool_name = text[len("functions.") :].replace(":", "")
-    tool = next((tool for tool in tools if tool["function"]["name"] == tool_name), None)
+    stream=False
 
     if not stream:
-
-        # Currently not support calling parallel tool
-        # while tool is not None:
-        prompt += f"{role_prefix}functions.{tool_name}:{role_suffix}"
-
-        try:
-            grammar = llama_grammar.LlamaGrammar.from_json_schema(
-                json.dumps(tool["function"]["parameters"]), verbose=llama.verbose
-            )
-        except Exception as e:
-            grammar = llama_grammar.LlamaGrammar.from_string(
-                llama_grammar.JSON_GBNF, verbose=llama.verbose
-            )
-            if llama.verbose:
-                print(
-                    "Failed to parse function body as JSON schema, falling back to default grammar"
-                )
-                print(e)
-
-        response = llama.create_completion(
-            prompt=prompt,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            typical_p=typical_p,
-            stream=False,
-            stop=stop,
-            max_tokens=None,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            repeat_penalty=repeat_penalty,
-            tfs_z=tfs_z,
-            mirostat_mode=mirostat_mode,
-            mirostat_tau=mirostat_tau,
-            mirostat_eta=mirostat_eta,
-            model=model,
-            logits_processor=logits_processor,
-            grammar=grammar,
-        )
-
-        # Extract the JSON string from the response
-        # print('Response:', response)
-        text = response["choices"][0]["text"]
-        json_string = text[text.find("{"):text.rfind("}") + 1]
-
-        # Convert JSON string to dictionary
-        tool_call_dict = json.loads(json_string)
 
         # Merge completions
         function_call_dict: Union[Dict[str, str], Dict[Literal["function_call"], llama_types.ChatCompletionRequestAssistantMessageFunctionCall]] = { 
             "function_call": {
                 "name": tool_name,
-                "arguments": tool_call_dict,
+                "arguments": completion[0]["choices"][0]["text"],
             }
         } if len(completion) == 1 else {}
         
@@ -390,13 +292,13 @@ def llama3_function_calling(
                             {
                                 "id": "call_"
                                 + f"_{0}_"
-                                + tool_name
+                                + tool_call_dict["name"]
                                 + "_"
                                 + completion["id"],
                                 "type": "function",
                                 "function": {
-                                    "name": tool_name,
-                                    "arguments": tool_call_dict,
+                                    "name": tool_call_dict["name"],
+                                    "arguments": tool_call_dict["arguments"],
                                 },
                             }
                             # for i, (tool_name, completion) in enumerate(

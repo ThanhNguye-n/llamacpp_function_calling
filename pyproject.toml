@@ -10,9 +10,11 @@ authors = [
     { name="Thanh Nguyen", email="ttnnguyen159@gmail.com" }
 ]
 dependencies = [
-    "langchain-core<=0.2.1",
     "langchain_community>=0.2.5"
 ]
 
 [tool.setuptools]
-packages = ["llamacpp_function_calling"] 
+packages = ["llamacpp_function_calling", "llamacpp_function_calling.chat_format"]
+
+[tool.setuptools.package-dir]
+llamacpp_function_calling = "llamacpp_function_calling"
